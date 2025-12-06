@@ -5,11 +5,15 @@
 #include <Adafruit_LiquidCrystal.h>
 #include <media.h>
 
-inline byte upArrow[8] = {
+
+#define CHAR_UP 1
+#define CHAR_DOWN 2
+
+inline byte up_arrow[8] = {
     0b00100, 0b01110, 0b11111, 0b00100, 0b00100, 0b00100, 0b00000, 0b00000
   };
 
-inline byte downArrow[8] = {
+inline byte down_arrow[8] = {
     0b00000, 0b00000, 0b00100, 0b00100, 0b00100, 0b11111, 0b01110, 0b00100
   };
 
@@ -34,11 +38,13 @@ public:
 
     void display_character(char c, uint8_t line, uint8_t col);
 
+    void clear_buffer();
+
     // Display the "now playing" screen
     void display_playing(const Song* song, uint32_t elapsed);
 
     // Display the album selection list
-    void display_album_list(const Album* albums, uint8_t albumCount, uint8_t selectedIndex);
+    void display_album_list(const Album* albums, uint16_t albumCount, uint16_t selectedIndex);
 
     // Display an initialization/splash screen
     void display_splash(const String& title, const String& subtitle);

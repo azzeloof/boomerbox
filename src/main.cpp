@@ -9,10 +9,6 @@
 
 #define DEBUG 1 // only enable for usb tethered operation
 
-// Every song should have title, artist, album, and track number metadata for proper cataloging
-// A directory can only contain either other directories, or songs. A directory containing songs
-// is considered an album.
-
 enum class State {
     INITIALIZING,
     IDLE,
@@ -48,13 +44,14 @@ Adafruit_seesaw ss1;
 State player_state = State::IDLE;
 boolean sd_card_present = false;
 ButtonStates button_states = ButtonStates();
-//Album* albums = nullptr;
-Album albums[1024];
-uint8_t n_albums = 0;
-uint16_t n_songs = 0;
-uint8_t album_list_index = 0;
+
+// Album storage - only metadata, songs loaded on demand
+Album albums[MAX_ALBUMS];
+uint16_t n_albums = 0;
+uint16_t album_list_index = 0;
 Album* current_album = nullptr;
 Song* current_song = nullptr;
+uint8_t current_song_index = 0;
 uint32_t elapsed = 0;
 
 void poll_buttons() {
@@ -66,164 +63,485 @@ void poll_buttons() {
     button_states.down = !ss1.digitalRead(BTN_DOWN);
 }
 
-Song file_to_song(File file) {
-    Song song;
-    song.filename = file.name();
-    Serial.println(file.name());
-    if (SongMetadata metadata; parseMetadata(file, metadata)) {
-        song.title = metadata.title;
-        song.artist = metadata.artist;
-        song.album = metadata.album;
-        song.duration = metadata.duration;
+// ============================================================================
+// LAZY LOADING IMPLEMENTATION
+// ============================================================================
+
+void unloadAlbumsExcept(const int16_t keepIndex) {
+    for (uint16_t i = 0; i < n_albums; i++) {
+        if (i != keepIndex && albums[i].loaded) {
+            Serial.print("Unloading album: ");
+            Serial.println(albums[i].title);
+            albums[i].unload();
+        }
     }
-    return song;
 }
 
-void scan_dir(File dir) {
-    if (File file = dir.openNextFile(); file.isDirectory()) {
-        // This is not an album, keep scanning deeper
-        scan_dir(file);
-        file.close();
-    } else {
-        // The first file is not another directory. This is an album.
-        // Count the songs in th
-        String extension = getFileExtension(file.name());
-        extension.toLowerCase();
-        bool is_media = false;
-        for (int i=0; i<sizeof(media_extensions); i++) {
-            if (extension == media_extensions[i]) {
-                is_media = true;
+// Count audio files in a directory (without loading metadata)
+uint8_t countAudioFiles(File& dir) {
+    uint8_t count = 0;
+    dir.rewindDirectory();
+    while (File entry = dir.openNextFile()) {
+        if (!entry.isDirectory() && isAudioFile(entry.name())) {
+            count++;
+            if (count >= MAX_SONGS_PER_ALBUM) {
+                entry.close();
+                break;
             }
         }
-        if (is_media) {
-            Serial.println(file.name());
-            Song song = file_to_song(file);
-            for (int j=0; j<n_albums; j++) {
-                if (albums[j].artist == song.artist && albums[j].title == song.album) {
-                    // The album exists, add the song to it.
-                    continue;
+        entry.close();
+    }
+    return count;
+}
+
+// Load full song details for an album
+bool loadAlbumSongs(Album* album) {
+    if (!album || album->loaded) return album != nullptr;
+
+    // First, unload other albums to free memory
+    int16_t albumIndex = -1;
+    for (uint16_t i = 0; i < n_albums; i++) {
+        if (&albums[i] == album) {
+            albumIndex = i;
+            break;
+        }
+    }
+    unloadAlbumsExcept(albumIndex);
+
+    Serial.print("Loading songs for: ");
+    Serial.println(album->title);
+
+    File dir = SD.open(album->path);
+    if (!dir) {
+        Serial.print("Failed to open: ");
+        Serial.println(album->path);
+        return false;
+    }
+
+    // Count files first
+    const uint8_t fileCount = countAudioFiles(dir);
+    if (fileCount == 0) {
+        dir.close();
+        return false;
+    }
+
+    // Allocate the songs array
+    uint8_t const allocCount = min(fileCount, MAX_SONGS_PER_ALBUM);
+    album->songs = new (std::nothrow) Song[allocCount];
+    if (!album->songs) {
+        Serial.println("Failed to allocate songs!");
+        dir.close();
+        return false;
+    }
+
+    // Load each song
+    dir.rewindDirectory();
+    uint8_t songIndex = 0;
+    bool hasValidTrackNumbers = false;
+    uint8_t tracksWithNumbers = 0;
+
+    while (File entry = dir.openNextFile()) {
+        if (songIndex >= allocCount) {
+            entry.close();
+            break;
+        }
+
+        if (!entry.isDirectory() && isAudioFile(entry.name())) {
+            Song& song = album->songs[songIndex];
+            song.filename = entry.name();
+
+            if (SongMetadata metadata; parseMetadata(entry, metadata)) {
+                song.title = metadata.title;
+                song.artist = metadata.artist;
+                song.album = metadata.album;
+                song.duration = metadata.duration;
+                song.trackNumber = metadata.trackNumber;
+                
+                if (metadata.trackNumber > 0) {
+                    tracksWithNumbers++;
+                    // Consider track numbers valid if they're reasonable
+                    // (not impossibly high for a normal album)
+                    if (metadata.trackNumber <= 99) {
+                        hasValidTrackNumbers = true;
+                    }
+                }
+            } else {
+                // Fallback to filename
+                song.title = entry.name();
+                song.artist = album->artist;
+                song.album = album->title;
+                song.trackNumber = 0;
+                song.duration = 0;
+            }
+
+            songIndex++;
+        }
+        entry.close();
+    }
+
+    dir.close();
+    album->song_count = songIndex;
+    album->loaded = true;
+
+    // Decide whether to sort based on track numbers
+    // Sort if: we have valid track numbers AND at least half the songs have them
+
+    if (bool shouldSort = hasValidTrackNumbers && (tracksWithNumbers >= (songIndex + 1) / 2)) {
+        // Log any suspicious metadata before sorting
+        for (uint8_t i = 0; i < album->song_count; i++) {
+            if (Song& song = album->songs[i]; song.trackNumber > album->song_count && song.trackNumber > 0) {
+                Serial.print("Warning: ");
+                Serial.print(song.title);
+                Serial.print(" has track number ");
+                Serial.print(song.trackNumber);
+                Serial.print(" but album only has ");
+                Serial.print(album->song_count);
+                Serial.println(" songs");
+            }
+        }
+        
+        // Stable insertion sort: maintains relative order of equal elements
+        // This will sort songs by track number, placing songs with trackNumber == 0 at the end
+        for (uint8_t i = 1; i < album->song_count; i++) {
+            const Song temp = album->songs[i];
+            int8_t j = i - 1;
+            
+            while (j >= 0) {
+                const uint8_t prevTrack = album->songs[j].trackNumber;
+                const uint8_t currTrack = temp.trackNumber;
+                
+                // If current has a track number (non-zero)
+                if (currTrack > 0) {
+                    // Move previous if: previous has no track (0) OR previous track > current track
+                    if (prevTrack == 0 || prevTrack > currTrack) {
+                        album->songs[j + 1] = album->songs[j];
+                        j--;
+                    } else {
+                        break;
+                    }
                 } else {
-                    // The album does not exist. Create it and add the song.
+                    // Current has no track number (0), keep it at the end in load order
+                    break;
                 }
             }
+            album->songs[j + 1] = temp;
+        }
+        
+        Serial.print("Sorted ");
+        Serial.print(tracksWithNumbers);
+        Serial.print("/");
+        Serial.print(album->song_count);
+        Serial.println(" songs by track number");
+    } else {
+        if (tracksWithNumbers > 0) {
+            Serial.print("Skipping sort: only ");
+            Serial.print(tracksWithNumbers);
+            Serial.print("/");
+            Serial.print(album->song_count);
+            Serial.println(" songs have track numbers");
+        } else {
+            Serial.println("No track numbers found, keeping load order");
+        }
+    }
+
+    // Final song order for debugging
+    Serial.println("Play order:");
+    for (uint8_t i = 0; i < album->song_count; i++) {
+        Serial.print("  ");
+        Serial.print(i + 1);
+        Serial.print(". ");
+        if (album->songs[i].trackNumber > 0) {
+            Serial.print("[Track ");
+            Serial.print(album->songs[i].trackNumber);
+            Serial.print("] ");
+        }
+        Serial.println(album->songs[i].title);
+    }
+
+    Serial.print("Loaded ");
+    Serial.print(album->song_count);
+    Serial.println(" songs");
+
+    return true;
+}
+
+// Register an album from a directory (only reads first song for metadata)
+bool registerAlbumFromDir(File& dir, const String& path) {
+    if (n_albums >= MAX_ALBUMS) {
+        Serial.println("Max albums reached!");
+        return false;
+    }
+
+    // Look for the first audio file to get album metadata
+    File firstAudio;
+    bool found = false;
+
+    dir.rewindDirectory();
+    while (File entry = dir.openNextFile()) {
+        if (!entry.isDirectory() && isAudioFile(entry.name())) {
+            firstAudio = entry;
+            found = true;
+            break;
+        }
+        entry.close();
+    }
+
+    if (!found) {
+        return false;
+    }
+
+    // Parse metadata from first file
+    SongMetadata metadata;
+    const bool hasMetadata = parseMetadata(firstAudio, metadata);
+    firstAudio.close();
+
+    // Create album entry
+    Album& album = albums[n_albums];
+    album.path = path;
+    album.songs = nullptr;
+    album.song_count = 0;
+    album.loaded = false;
+
+    if (hasMetadata) {
+        album.title = metadata.album.length() > 0 ? metadata.album : path;
+        album.artist = metadata.artist.length() > 0 ? metadata.artist : "Unknown Artist";
+        album.expected_song_count = metadata.totalTracks;
+    } else {
+        // Fallback to directory name
+        int lastSlash = path.lastIndexOf('/');
+        album.title = lastSlash >= 0 ? path.substring(lastSlash + 1) : path;
+        album.artist = "Unknown Artist";
+        album.expected_song_count = 0;
+    }
+
+    n_albums++;
+
+    Serial.print("Found album: ");
+    Serial.print(album.artist);
+    Serial.print(" - ");
+    Serial.println(album.title);
+
+    return true;
+}
+
+// Recursively scan directories for albums
+void scan_dir(File& dir, const String& path, uint8_t depth) {
+    if (depth > MAX_SCAN_DEPTH || n_albums >= MAX_ALBUMS) {
+        return;
+    }
+
+    bool hasAudioFiles = false;
+    bool hasSubdirs = false;
+
+    // First pass: check what this directory contains
+    while (File entry = dir.openNextFile()) {
+        if (entry.isDirectory()) {
+            hasSubdirs = true;
+        } else if (isAudioFile(entry.name())) {
+            hasAudioFiles = true;
+        }
+        entry.close();
+
+        // Early exit if we know it's an album
+        if (hasAudioFiles) break;
+    }
+
+    if (hasAudioFiles) {
+        // This directory is an album - register it
+        registerAlbumFromDir(dir, path);
+    } else if (hasSubdirs) {
+        // Recurse into subdirectories
+        dir.rewindDirectory();
+        while (File entry = dir.openNextFile()) {
+            if (entry.isDirectory()) {
+                String subPath = path.length() > 0 
+                    ? path + "/" + entry.name() 
+                    : String("/") + entry.name();
+                scan_dir(entry, subPath, depth + 1);
+            }
+            entry.close();
+
+            if (n_albums >= MAX_ALBUMS) break;
         }
     }
 }
 
 void scan_songs() {
-    File base_dir = SD.open("/");
-    scan_dir(base_dir);
-    base_dir.close();
-
-    // loop through to enumerate albums
-    /*
-    uint8_t album_count = 0;
-    while (File entry = base_dir.openNextFile()) {
-        if (entry.isDirectory()) {
-            album_count++;
-            entry.close();
-        }
+    // Clear existing albums
+    for (uint16_t i = 0; i < n_albums; i++) {
+        albums[i].unload();
+        albums[i].title = "";
+        albums[i].artist = "";
+        albums[i].path = "";
     }
-    albums = new Album[album_count];
-    n_albums = album_count;
+    n_albums = 0;
 
-    // loop back through to catalog albums and songs
-    base_dir.rewindDirectory();
-    uint8_t album_index = 0;
-    while (File entry = base_dir.openNextFile()) {
-        if (entry.isDirectory()) {
-            Serial.println(entry.name());
-            uint8_t song_count = 0;
-
-            // First pass: count songs
-            while (File song = entry.openNextFile()) {
-                if (!song.isDirectory()) {
-                    song_count++;
-                }
-                song.close();
-            }
-
-            // Allocate memory for songs
-            if (song_count > 0) {
-                albums[album_index].songs = new Song[song_count];
-                albums[album_index].song_count = song_count;
-
-                // Second pass: populate songs
-                entry.rewindDirectory();
-                uint8_t song_index = 0;
-                while (File song = entry.openNextFile()) {
-                    if (!song.isDirectory()) {
-                        albums[album_index].songs[song_index] = file_to_song(song);
-                        song_index++;
-                    }
-                    song.close();
-                }
-
-                // Set album metadata from the first song
-                albums[album_index].title = albums[album_index].songs[0].album;
-                albums[album_index].artist = albums[album_index].songs[0].artist;
-            }
-
-            n_songs += song_count;
-            albums[album_index].path = entry.name();
-            album_index++;
-        }
-        entry.close();
+    File root = SD.open("/");
+    if (!root) {
+        Serial.println("Failed to open root directory!");
+        return;
     }
-    base_dir.close();
-    */
+
+    scan_dir(root, "", 0);
+    root.close();
+
+    Serial.print("Scan complete: found ");
+    Serial.print(n_albums);
+    Serial.println(" albums");
 }
 
+// ============================================================================
+// PLAYBACK
+// ============================================================================
+
+void play_next_song();
+void play_prev_song();
 
 void play_album(Album* album) {
+    Serial.println("play_album()");
+    if (!album) return;
+
+    // Load songs if not already loaded
+    if (!album->loaded) {
+        lcd.clear();
+        lcd.display_splash("Loading...", album->title);
+
+        if (!loadAlbumSongs(album)) {
+            lcd.display_error("Load failed!");
+            delay(2000);
+            return;
+        }
+    }
+
+    if (album->song_count == 0) {
+        lcd.display_error("No songs!");
+        delay(2000);
+        return;
+    }
+
     elapsed = 0;
     current_album = album;
-    current_song = album->songs; // TODO: what happens if the album is empty?
-    String const path = String(album->path + "/" + current_song->filename);
-    musicPlayer.startPlayingFile(path.c_str());
+    current_song_index = 0;
+    current_song = &album->songs[0];
+
+    const String filePath = album->path + "/" + current_song->filename;
+    Serial.print("Playing: ");
+    Serial.println(filePath);
+
+    if (!musicPlayer.startPlayingFile(filePath.c_str())) {
+        Serial.println("Failed to start playback!");
+        lcd.display_error("Playback failed!");
+        delay(2000);
+        current_song = nullptr;
+        return;
+    }
+    
+    // Give the player time to start
+    delay(1000);
+}
+
+void play_next_song() {
+    Serial.println("play_next_song()");
+    if (!current_album || !current_album->loaded) return;
+
+    if (current_song_index < current_album->song_count - 1) {
+        current_song_index++;
+        current_song = &current_album->songs[current_song_index];
+        elapsed = 0;
+
+        const String filePath = current_album->path + "/" + current_song->filename;
+        Serial.print("Playing next: ");
+        Serial.println(filePath);
+        
+        if (!musicPlayer.playFullFile(filePath.c_str())) { // interrupts wouldn't work. Maybe 2040 problem
+            Serial.println("Failed to start playback!");
+            // Try next song
+            play_next_song();
+            return;
+        }
+        
+        // Give the player time to start
+        delay(50);
+    } else {
+        // End of album
+        Serial.println("End of album");
+        current_song = nullptr;
+        player_state = State::IDLE;
+    }
+}
+
+void play_prev_song() {
+    Serial.println("play_prev_song()");
+    if (!current_album || !current_album->loaded) return;
+
+    if (current_song_index > 0) {
+        current_song_index--;
+        current_song = &current_album->songs[current_song_index];
+        elapsed = 0;
+
+        const String filePath = current_album->path + "/" + current_song->filename;
+        Serial.print("Playing prev: ");
+        Serial.println(filePath);
+        
+        if (!musicPlayer.startPlayingFile(filePath.c_str())) {
+            Serial.println("Failed to start playback!");
+        }
+        
+        // Give the player time to start
+        delay(50);
+    }
 }
 
 void pause() {
-
+    Serial.println("pause()");
+    musicPlayer.pausePlaying(true);
 }
 
 void resume() {
-
+    Serial.println("resume()");
+    musicPlayer.pausePlaying(false);
 }
 
 void stop() {
-
+    Serial.println("stop()");
+    musicPlayer.stopPlaying();
+    current_song = nullptr;
+    current_album = nullptr;
 }
+
+// ============================================================================
+// SETUP & LOOP
+// ============================================================================
 
 void setup() {
     player_state = State::INITIALIZING;
     Serial.begin(115200);
 
     #if DEBUG
-        while (!Serial) { delay(1); } // halt until serial port is opened
+        while (!Serial) { delay(1); }
     #endif
 
     delay(500);
 
     Serial.println("Initializing LCD...");
-    if (! lcd.begin()) {
-
+    if (!lcd.begin()) {
+        Serial.println("LCD init failed!");
     }
     lcd.set_backlight(true);
     Serial.println("LCD initialized successfully!");
-    lcd.display_line("BoomerBox", 1);
-    lcd.display_line("Initializing", 2);
+    lcd.display_splash("BoomerBox", "Initializing...");
 
     Serial.println("Initializing VS1053...");
-    if (! musicPlayer.begin()) {
+    if (!musicPlayer.begin()) {
         Serial.println("Failed to initialize VS1053!");
         player_state = State::ERROR;
         return;
     }
+    musicPlayer.useInterrupt(VS1053_FILEPLAYER_TIMER0_INT);
     Serial.println("VS1053 initialized successfully!");
 
     Serial.println("Initializing SD card...");
-    if (! SD.begin(CARDCS)) {
+    if (!SD.begin(CARDCS)) {
         Serial.println("Failed to initialize SD card!");
         sd_card_present = false;
     } else {
@@ -232,12 +550,12 @@ void setup() {
     }
 
     Serial.println("Initializing Buttons...");
-    if (! ss0.begin(SS0_I2C_ADDR)) {
+    if (!ss0.begin(SS0_I2C_ADDR)) {
         Serial.println("Failed to initialize Seesaw 0!");
         player_state = State::ERROR;
         return;
     }
-    if (! ss1.begin(SS1_I2C_ADDR)) {
+    if (!ss1.begin(SS1_I2C_ADDR)) {
         Serial.println("Failed to initialize Seesaw 1!");
         player_state = State::ERROR;
         return;
@@ -251,69 +569,106 @@ void setup() {
     Serial.println("Buttons initialized successfully!");
 
     if (sd_card_present) {
-        Serial.println("Scanning for songs...");
+        lcd.display_splash("BoomerBox", "Scanning...");
+        Serial.println("Scanning for albums...");
         scan_songs();
-        Serial.println("Scan complete!");
-        Serial.println("Found " + String(n_songs) + " songs in " + String(n_albums) + " albums.");
     }
 
     Serial.println("Ready to play!");
     player_state = State::IDLE;
-    lcd.display_splash("BoomerBox", "Ready to play!");
-    delay(2000);
+    lcd.display_splash("BoomerBox", "Ready!");
+    delay(1000);
 }
 
 void loop() {
-    //handleLcdUpdate();
     switch (player_state) {
         case State::INITIALIZING:
-            // This should never happen
             Serial.println("Player is in the initializing state, but it shouldn't be!");
             Serial.println("Moving to IDLE state.");
             player_state = State::IDLE;
             delay(1000);
             break;
+
         case State::IDLE:
-            // No music is playing, display the album list
             poll_buttons();
             if (button_states.up) {
                 if (album_list_index > 0) {
                     album_list_index--;
                 }
+                delay(150);
             } else if (button_states.down) {
                 if (album_list_index < n_albums - 1) {
                     album_list_index++;
                 }
-            } else if (button_states.play) { // TODO: consider re-ordering
-                play_album(albums + album_list_index);
-                player_state = State::PLAYING;
+                delay(150);
+            } else if (button_states.play && n_albums > 0) {
+                play_album(&albums[album_list_index]);
+                if (current_song) {
+                    player_state = State::PLAYING;
+                }
             }
             lcd.display_album_list(albums, n_albums, album_list_index);
-            //display_list();
             break;
+
         case State::PLAYING:
-            // A song is playing, display the name, artist, etc.
             poll_buttons();
-            lcd.display_playing(current_song, elapsed);
-            //display_playing(current_song);
+
+            // Check if song finished - use stopped() for more reliable check
+            // Also add a small debounce to avoid false positives right after starting
+            if (musicPlayer.stopped()) {
+                play_next_song();
+            }
+
+            if (button_states.stop) {
+                stop();
+                player_state = State::IDLE;
+            } else if (button_states.play) {
+                pause();
+                player_state = State::PAUSED;
+                delay(200);
+            } else if (button_states.next) {
+                musicPlayer.stopPlaying();
+                play_next_song();
+                delay(200);
+            } else if (button_states.back) {
+                musicPlayer.stopPlaying();
+                play_prev_song();
+                delay(200);
+            }
+
+            if (current_song) {
+                lcd.display_playing(current_song, elapsed);
+            }
             break;
+
         case State::PAUSED:
-            // A song is playing but paused.
-            // flash the PLAY button
             poll_buttons();
-            //display_playing(current_song);
+            if (button_states.play) {
+                resume();
+                player_state = State::PLAYING;
+                delay(200);
+            } else if (button_states.stop) {
+                stop();
+                player_state = State::IDLE;
+            }
+            if (current_song) {
+                lcd.display_playing(current_song, elapsed);
+            }
             break;
+
         case State::STOPPED:
-            // we may not need this state, because pressing STOP in PLAYING can just go right to IDLE
+            player_state = State::IDLE;
             break;
+
         case State::ERROR:
-            // Unrecoverable error, exit
             Serial.println("Player is in an error state!");
+            lcd.display_error("System Error");
             delay(1000);
             break;
+
         default:
-            // This should never happen
-            Serial.println("Player is in an unknown state: " + String(static_cast<int>(player_state)) + "");
+            Serial.println("Player is in an unknown state!");
+            player_state = State::IDLE;
             delay(1000);
             break;
     }

@@ -11,8 +11,8 @@ bool Lcd::begin() {
     if (! _lcd.begin(COLS, ROWS)) {
         return false;
     }
-    _lcd.createChar(0, upArrow);
-    _lcd.createChar(1, downArrow);
+    _lcd.createChar(CHAR_UP, up_arrow);
+    _lcd.createChar(CHAR_DOWN, down_arrow);
 
     // Initialize the buffer
     for (uint8_t i = 0; i < ROWS; i++) {
@@ -28,13 +28,17 @@ void Lcd::set_backlight(const bool on) {
     _lcd.setBacklight(on ? 1 : 0);
 }
 
-void Lcd::clear() {
-    _lcd.clear();
+void Lcd::clear_buffer() {
     for (uint8_t i = 0; i < ROWS; i++) {
         for (uint8_t j = 0; j < COLS; j++) {
             _buffer[i][j] = ' ';
         }
     }
+}
+
+void Lcd::clear() {
+    clear_buffer();
+    _lcd.clear();
 }
 
 void Lcd::display_line(const String& text, const uint8_t line, const bool center) {
@@ -51,11 +55,17 @@ void Lcd::display_line(const String& text, const uint8_t line, const bool center
     if (center) {
         start = (COLS - length) / 2;
     }
-    for (uint8_t i = 0; i < length; i++) {
-        if (text[i] != _buffer[line][i+start]) {
-            _lcd.setCursor(i+start, line);
+    for (uint8_t i=0; i<start; i++) {
+        displayText = " " + displayText;
+    }
+    for (uint8_t i=start+length; i<COLS; i++) {
+        displayText += " ";
+    }
+    for (uint8_t i=0; i<COLS; i++) {
+        if (displayText[i] != _buffer[line][i]) {
+            _lcd.setCursor(i, line);
             _lcd.write(displayText[i]);
-            _buffer[line][i+start] = displayText[i];
+            _buffer[line][i] = displayText[i];
         }
     }
 }
@@ -70,7 +80,7 @@ void Lcd::display_character(const char c, const uint8_t line, const uint8_t col)
 }
 
 void Lcd::display_progress(const uint32_t elapsed, const uint32_t duration, uint8_t line) {
-    _lcd.setCursor(0, line);
+    String text = "";
 
     // Format: "MM:SS / MM:SS"
     const uint8_t elapsedMin = elapsed / 60;
@@ -78,21 +88,15 @@ void Lcd::display_progress(const uint32_t elapsed, const uint32_t duration, uint
     const uint8_t durationMin = duration / 60;
     const uint8_t durationSec = duration % 60;
 
-    // Print elapsed time
-    if (elapsedMin < 10) _lcd.print('0');
-    _lcd.print(elapsedMin);
-    _lcd.print(':');
-    if (elapsedSec < 10) _lcd.print('0');
-    _lcd.print(elapsedSec);
-
-    _lcd.print(" / ");
-
-    // Print duration
-    if (durationMin < 10) _lcd.print('0');
-    _lcd.print(durationMin);
-    _lcd.print(':');
-    if (durationSec < 10) _lcd.print('0');
-    _lcd.print(durationSec);
+    if (elapsedMin < 10) text += "0";
+    text += String(elapsedMin) + ":";
+    if (elapsedSec < 10) text += "0";
+    text += String(elapsedSec) + "/";
+    if (durationMin < 10) text += "0";
+    text += String(durationMin) + ":";
+    if (durationSec < 10) text += "0";
+    text += String(durationSec);
+    display_line(text, line, false);
 }
 
 void Lcd::display_playing(const Song* song, const uint32_t elapsed) {
@@ -104,20 +108,14 @@ void Lcd::display_playing(const Song* song, const uint32_t elapsed) {
     display_progress(elapsed, song->duration, 3);
 }
 
-void Lcd::display_album_list(const Album* albums, const uint8_t albumCount, const uint8_t selectedIndex) {
+void Lcd::display_album_list(const Album* albums, const uint16_t albumCount, const uint16_t selectedIndex) {
     if (albumCount > 0 && albums != nullptr) {
         const Album* selected = &albums[selectedIndex];
-        //_lcd.setCursor(0, 0);
-        if (selectedIndex > 0) display_character(0x00, 3, 0);//_lcd.write(0);
+        if (selectedIndex > 0) display_line(String(char(CHAR_UP)), 0, false);
         display_line(selected->artist, 1);
         display_line(selected->title, 2);
-        //_lcd.setCursor(0, 3);
-        if (selectedIndex < albumCount - 1)
-        {
-            display_line(" (" + String(selectedIndex + 1) + "/" + String(albumCount) + ")", 3, false);
-            display_character(0x01, 3, 0);
-            //display_character(*" ", 3, COLS - 1);
-            //_lcd.print(" ");
+        if (selectedIndex < albumCount - 1) {
+            display_line(String(char(CHAR_DOWN)) + " (" + String(selectedIndex + 1) + "/" + String(albumCount) + ")", 3, false);
         } else {
             display_line("(" + String(selectedIndex + 1) + "/" + String(albumCount) + ")", 3, false);
         }

@@ -78,6 +78,11 @@ bool parseWavMetadata(File &file, SongMetadata &metadata) {
 
     // Check for RIFF header
     char header[4];
+    if (file.read(header, 4) != 4 || strncmp(header, "RIFF", 4) != 0) {
+        return false;
+    }
+
+    uint32_t fileSize;
     file.read(&fileSize, 4);
 
     // Check for WAVE format
