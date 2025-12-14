@@ -6,8 +6,9 @@
 #include <Adafruit_seesaw.h>
 #include <pindefs.h>
 #include <media.h>
+#include <new>
 
-#define DEBUG 1 // only enable for usb tethered operation
+#define DEBUG 0 // only enable for usb tethered operation
 
 enum class State {
     INITIALIZING,
@@ -19,10 +20,8 @@ enum class State {
 };
 
 struct ButtonStates {
-    bool back = false;
     bool play = false;
     bool stop = false;
-    bool next = false;
     bool up = false;
     bool down = false;
 };
@@ -38,8 +37,7 @@ Adafruit_VS1053_FilePlayer musicPlayer =
 
 Lcd lcd(LCD_I2C_ADDR);
 
-Adafruit_seesaw ss0;
-Adafruit_seesaw ss1;
+Adafruit_seesaw ss;
 
 State player_state = State::IDLE;
 boolean sd_card_present = false;
@@ -53,14 +51,20 @@ Album* current_album = nullptr;
 Song* current_song = nullptr;
 uint8_t current_song_index = 0;
 uint32_t elapsed = 0;
+unsigned long start_time = 0;
+double volume = 20.0; // 0 - 100
+uint8_t player_volume = 0; // 255 - 0
 
-void poll_buttons() {
-    button_states.back = !ss0.digitalRead(BTN_BACK);
-    button_states.play = !ss0.digitalRead(BTN_PLAY);
-    button_states.stop = !ss0.digitalRead(BTN_STOP);
-    button_states.next = !ss0.digitalRead(BTN_NEXT);
-    button_states.up = !ss1.digitalRead(BTN_UP);
-    button_states.down = !ss1.digitalRead(BTN_DOWN);
+void poll_inputs() {
+    button_states.play = !ss.digitalRead(BTN_PLAY);
+    button_states.stop = !ss.digitalRead(BTN_STOP);
+    button_states.up = !ss.digitalRead(BTN_UP);
+    button_states.down = !ss.digitalRead(BTN_DOWN);
+    volume = analogRead(VOL_KNOB) * (100.0 / 1023.0);
+    ss.digitalWrite(LED_PLAY, button_states.play);
+    ss.digitalWrite(LED_STOP, button_states.stop);
+    ss.digitalWrite(LED_UP, button_states.up);
+    ss.digitalWrite(LED_DOWN, button_states.down);
 }
 
 // ============================================================================
@@ -149,8 +153,8 @@ bool loadAlbumSongs(Album* album) {
         if (!entry.isDirectory() && isAudioFile(entry.name())) {
             Song& song = album->songs[songIndex];
             song.filename = entry.name();
-
-            if (SongMetadata metadata; parseMetadata(entry, metadata)) {
+            SongMetadata metadata;
+            if (parseMetadata(entry, metadata)) {
                 song.title = metadata.title;
                 song.artist = metadata.artist;
                 song.album = metadata.album;
@@ -189,7 +193,8 @@ bool loadAlbumSongs(Album* album) {
     if (bool shouldSort = hasValidTrackNumbers && (tracksWithNumbers >= (songIndex + 1) / 2)) {
         // Log any suspicious metadata before sorting
         for (uint8_t i = 0; i < album->song_count; i++) {
-            if (Song& song = album->songs[i]; song.trackNumber > album->song_count && song.trackNumber > 0) {
+            Song& song = album->songs[i];
+            if (song.trackNumber > album->song_count && song.trackNumber > 0) {
                 Serial.print("Warning: ");
                 Serial.print(song.title);
                 Serial.print(" has track number ");
@@ -427,7 +432,7 @@ void play_album(Album* album) {
     const String filePath = album->path + "/" + current_song->filename;
     Serial.print("Playing: ");
     Serial.println(filePath);
-
+    start_time = millis();
     if (!musicPlayer.startPlayingFile(filePath.c_str())) {
         Serial.println("Failed to start playback!");
         lcd.display_error("Playback failed!");
@@ -452,8 +457,8 @@ void play_next_song() {
         const String filePath = current_album->path + "/" + current_song->filename;
         Serial.print("Playing next: ");
         Serial.println(filePath);
-        
-        if (!musicPlayer.playFullFile(filePath.c_str())) { // interrupts wouldn't work. Maybe 2040 problem
+        start_time = millis();
+        if (!musicPlayer.startPlayingFile(filePath.c_str())) { // interrupts wouldn't work. Maybe 2040 problem
             Serial.println("Failed to start playback!");
             // Try next song
             play_next_song();
@@ -482,7 +487,7 @@ void play_prev_song() {
         const String filePath = current_album->path + "/" + current_song->filename;
         Serial.print("Playing prev: ");
         Serial.println(filePath);
-        
+        start_time = millis();
         if (!musicPlayer.startPlayingFile(filePath.c_str())) {
             Serial.println("Failed to start playback!");
         }
@@ -537,7 +542,7 @@ void setup() {
         player_state = State::ERROR;
         return;
     }
-    musicPlayer.useInterrupt(VS1053_FILEPLAYER_TIMER0_INT);
+    musicPlayer.useInterrupt(VS1053_FILEPLAYER_PIN_INT);
     Serial.println("VS1053 initialized successfully!");
 
     Serial.println("Initializing SD card...");
@@ -550,22 +555,20 @@ void setup() {
     }
 
     Serial.println("Initializing Buttons...");
-    if (!ss0.begin(SS0_I2C_ADDR)) {
-        Serial.println("Failed to initialize Seesaw 0!");
+    if (!ss.begin(SS_I2C_ADDR)) {
+        Serial.println("Failed to initialize Seesaw!");
         player_state = State::ERROR;
         return;
     }
-    if (!ss1.begin(SS1_I2C_ADDR)) {
-        Serial.println("Failed to initialize Seesaw 1!");
-        player_state = State::ERROR;
-        return;
-    }
-    ss0.pinMode(BTN_BACK, INPUT_PULLUP);
-    ss0.pinMode(BTN_PLAY, INPUT_PULLUP);
-    ss0.pinMode(BTN_STOP, INPUT_PULLUP);
-    ss0.pinMode(BTN_NEXT, INPUT_PULLUP);
-    ss1.pinMode(BTN_UP, INPUT_PULLUP);
-    ss1.pinMode(BTN_DOWN, INPUT_PULLUP);
+
+    ss.pinMode(BTN_PLAY, INPUT_PULLUP);
+    ss.pinMode(BTN_STOP, INPUT_PULLUP);
+    ss.pinMode(BTN_UP, INPUT_PULLUP);
+    ss.pinMode(BTN_DOWN, INPUT_PULLUP);
+    ss.pinMode(LED_PLAY, OUTPUT);
+    ss.pinMode(LED_STOP, OUTPUT);
+    ss.pinMode(LED_UP, OUTPUT);
+    ss.pinMode(LED_DOWN, OUTPUT);
     Serial.println("Buttons initialized successfully!");
 
     if (sd_card_present) {
@@ -581,6 +584,9 @@ void setup() {
 }
 
 void loop() {
+    poll_inputs();
+    player_volume = static_cast<uint8_t>(200.0 - 200.0*pow(volume/100.0, 0.25));
+    musicPlayer.setVolume(player_volume, player_volume);
     switch (player_state) {
         case State::INITIALIZING:
             Serial.println("Player is in the initializing state, but it shouldn't be!");
@@ -590,7 +596,6 @@ void loop() {
             break;
 
         case State::IDLE:
-            poll_buttons();
             if (button_states.up) {
                 if (album_list_index > 0) {
                     album_list_index--;
@@ -603,22 +608,21 @@ void loop() {
                 delay(150);
             } else if (button_states.play && n_albums > 0) {
                 play_album(&albums[album_list_index]);
-                if (current_song) {
-                    player_state = State::PLAYING;
-                }
+                player_state = State::PLAYING;
+                //if (current_song) {
+                //    player_state = State::PLAYING;
+                //}
             }
             lcd.display_album_list(albums, n_albums, album_list_index);
             break;
 
         case State::PLAYING:
-            poll_buttons();
-
             // Check if song finished - use stopped() for more reliable check
             // Also add a small debounce to avoid false positives right after starting
             if (musicPlayer.stopped()) {
                 play_next_song();
             }
-
+            elapsed = (millis() - start_time) / 1000.0;
             if (button_states.stop) {
                 stop();
                 player_state = State::IDLE;
@@ -626,13 +630,13 @@ void loop() {
                 pause();
                 player_state = State::PAUSED;
                 delay(200);
-            } else if (button_states.next) {
-                musicPlayer.stopPlaying();
-                play_next_song();
-                delay(200);
-            } else if (button_states.back) {
+            } else if (button_states.up) {
                 musicPlayer.stopPlaying();
                 play_prev_song();
+                delay(200);
+            } else if (button_states.down) {
+                musicPlayer.stopPlaying();
+                play_next_song();
                 delay(200);
             }
 
@@ -642,7 +646,6 @@ void loop() {
             break;
 
         case State::PAUSED:
-            poll_buttons();
             if (button_states.play) {
                 resume();
                 player_state = State::PLAYING;

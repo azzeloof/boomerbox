@@ -67,23 +67,17 @@
 
 #define LCD_I2C_ADDR 0x20
 
-#define SS0_I2C_ADDR 0x3A
-#define SS1_I2C_ADDR 0x3B // TODO: find actual address
+#define SS_I2C_ADDR 0x3A
 
-// SeeSaw 0
-#define BTN_BACK 18
-#define BTN_PLAY 19
-#define BTN_STOP 20
-#define BTN_NEXT 21
-#define LED_BACK 12
-#define LED_PLAY 13
-#define LED_STOP 0
-#define LED_NEXT 1
+#define BTN_PLAY 18
+#define BTN_STOP 19
+#define BTN_UP 20
+#define BTN_DOWN 2
+#define LED_PLAY 12
+#define LED_STOP 13
+#define LED_UP 0
+#define LED_DOWN 1
 
-// SeeSaw 1
-#define BTN_UP 18
-#define BTN_DOWN 19
-#define LED_UP 12
-#define LED_DOWN 13
+#define VOL_KNOB 14
 
 #endif //BOOMERBOX_PINDEFS_H

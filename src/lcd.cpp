@@ -111,7 +111,11 @@ void Lcd::display_playing(const Song* song, const uint32_t elapsed) {
 void Lcd::display_album_list(const Album* albums, const uint16_t albumCount, const uint16_t selectedIndex) {
     if (albumCount > 0 && albums != nullptr) {
         const Album* selected = &albums[selectedIndex];
-        if (selectedIndex > 0) display_line(String(char(CHAR_UP)), 0, false);
+        if (selectedIndex > 0) {
+            display_line(String(char(CHAR_UP)), 0, false);
+        } else {
+            display_line("", 0, false);
+        }
         display_line(selected->artist, 1);
         display_line(selected->title, 2);
         if (selectedIndex < albumCount - 1) {
