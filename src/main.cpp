@@ -75,6 +75,36 @@ void poll_inputs() {
 }
 
 // ============================================================================
+// SORTING
+// ============================================================================
+
+template<typename T>
+void insertionSort(T* arr, uint16_t count, int (*cmp)(const T&, const T&)) {
+    for (uint16_t i = 1; i < count; i++) {
+        T temp = arr[i];
+        int16_t j = i - 1;
+        while (j >= 0 && cmp(arr[j], temp) > 0) {
+            arr[j + 1] = arr[j];
+            j--;
+        }
+        arr[j + 1] = temp;
+    }
+}
+
+int compareAlbums(const Album& a, const Album& b) {
+    int cmp = a.artist.compareTo(b.artist);
+    return cmp != 0 ? cmp : a.title.compareTo(b.title);
+}
+
+int compareSongsByTrack(const Song& a, const Song& b) {
+    if (a.trackNumber > 0 && b.trackNumber > 0)
+        return (int)a.trackNumber - (int)b.trackNumber;
+    if (a.trackNumber > 0) return -1;
+    if (b.trackNumber > 0) return 1;
+    return 0;
+}
+
+// ============================================================================
 // LAZY LOADING IMPLEMENTATION
 // ============================================================================
 
@@ -194,66 +224,23 @@ bool loadAlbumSongs(Album* album) {
     album->song_count = songIndex;
     album->loaded = true;
 
-    // Decide whether to sort based on track numbers
-    // Sort if: we have valid track numbers AND at least half the songs have them
-
+    // Sort by track number if we have valid track numbers for at least half the songs
     if (hasValidTrackNumbers && (tracksWithNumbers >= (songIndex + 1) / 2)) {
-        // Log any suspicious metadata before sorting
-        for (uint8_t i = 0; i < album->song_count; i++) {
-            Song& song = album->songs[i];
-            if (song.trackNumber > album->song_count && song.trackNumber > 0) {
-                Serial.print("Warning: ");
-                Serial.print(song.title);
-                Serial.print(" has track number ");
-                Serial.print(song.trackNumber);
-                Serial.print(" but album only has ");
-                Serial.print(album->song_count);
-                Serial.println(" songs");
-            }
-        }
-        
-        // Stable insertion sort: maintains relative order of equal elements
-        // This will sort songs by track number, placing songs with trackNumber == 0 at the end
-        for (uint8_t i = 1; i < album->song_count; i++) {
-            const Song temp = album->songs[i];
-            int8_t j = i - 1;
-            
-            while (j >= 0) {
-                const uint8_t prevTrack = album->songs[j].trackNumber;
-                const uint8_t currTrack = temp.trackNumber;
-                
-                // If current has a track number (non-zero)
-                if (currTrack > 0) {
-                    // Move previous if: previous has no track (0) OR previous track > current track
-                    if (prevTrack == 0 || prevTrack > currTrack) {
-                        album->songs[j + 1] = album->songs[j];
-                        j--;
-                    } else {
-                        break;
-                    }
-                } else {
-                    // Current has no track number (0), keep it at the end in load order
-                    break;
-                }
-            }
-            album->songs[j + 1] = temp;
-        }
+        insertionSort(album->songs, album->song_count, compareSongsByTrack);
         
         Serial.print("Sorted ");
         Serial.print(tracksWithNumbers);
         Serial.print("/");
         Serial.print(album->song_count);
         Serial.println(" songs by track number");
+    } else if (tracksWithNumbers > 0) {
+        Serial.print("Skipping sort: only ");
+        Serial.print(tracksWithNumbers);
+        Serial.print("/");
+        Serial.print(album->song_count);
+        Serial.println(" songs have track numbers");
     } else {
-        if (tracksWithNumbers > 0) {
-            Serial.print("Skipping sort: only ");
-            Serial.print(tracksWithNumbers);
-            Serial.print("/");
-            Serial.print(album->song_count);
-            Serial.println(" songs have track numbers");
-        } else {
-            Serial.println("No track numbers found, keeping load order");
-        }
+        Serial.println("No track numbers found, keeping load order");
     }
 
     Serial.println("Play order:");
@@ -335,6 +322,12 @@ bool registerAlbumFromDir(File& dir, const String& path) {
     return true;
 }
 
+// Sort albums alphabetically by artist, then by title
+void sortAlbums() {
+    insertionSort(albums, n_albums, compareAlbums);
+    Serial.println("Albums sorted by artist/title");
+}
+
 // Recursively scan directories for albums
 void scan_dir(File& dir, const String& path, uint8_t depth) {
     if (depth > MAX_SCAN_DEPTH || n_albums >= MAX_ALBUMS) {
@@ -398,6 +391,9 @@ void scan_songs() {
 
     scan_dir(root, "", 0);
     root.close();
+
+    // Sort albums alphabetically by artist, then title
+    sortAlbums();
 
     Serial.print("Scan complete: found ");
     Serial.print(n_albums);
@@ -680,14 +676,10 @@ void loop() {
             break;
 
         case State::IDLE:
-            if (button_states.up && buttonReady(2)) {
-                if (album_list_index > 0) {
-                    album_list_index--;
-                }
-            } else if (button_states.down && buttonReady(3)) {
-                if (album_list_index < n_albums - 1) {
-                    album_list_index++;
-                }
+            if (button_states.up && buttonReady(2) && n_albums > 0) {
+                album_list_index = (album_list_index == 0) ? n_albums - 1 : album_list_index - 1;
+            } else if (button_states.down && buttonReady(3) && n_albums > 0) {
+                album_list_index = (album_list_index >= n_albums - 1) ? 0 : album_list_index + 1;
             } else if (button_states.play && buttonReady(0) && n_albums > 0) {
                 play_album(&albums[album_list_index]);
                 player_state = State::PLAYING;
