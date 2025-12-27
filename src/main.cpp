@@ -676,14 +676,10 @@ void loop() {
             break;
 
         case State::IDLE:
-            if (button_states.up && buttonReady(2)) {
-                if (album_list_index > 0) {
-                    album_list_index--;
-                }
-            } else if (button_states.down && buttonReady(3)) {
-                if (album_list_index < n_albums - 1) {
-                    album_list_index++;
-                }
+            if (button_states.up && buttonReady(2) && n_albums > 0) {
+                album_list_index = (album_list_index == 0) ? n_albums - 1 : album_list_index - 1;
+            } else if (button_states.down && buttonReady(3) && n_albums > 0) {
+                album_list_index = (album_list_index >= n_albums - 1) ? 0 : album_list_index + 1;
             } else if (button_states.play && buttonReady(0) && n_albums > 0) {
                 play_album(&albums[album_list_index]);
                 player_state = State::PLAYING;
