@@ -256,7 +256,6 @@ bool loadAlbumSongs(Album* album) {
         }
     }
 
-    // Final song order for debugging
     Serial.println("Play order:");
     for (uint8_t i = 0; i < album->song_count; i++) {
         Serial.print("  ");
@@ -505,7 +504,7 @@ void play_prev_song() {
         return;
     }
 
-    // If not at the first song, go to previous song in this album
+    // If not at the first song, go to the previous song on this album
     if (current_song_index > 0) {
         current_song_index--;
         current_song = &current_album->songs[current_song_index];
@@ -525,7 +524,7 @@ void play_prev_song() {
     }
 
     // At first song of album
-    // If autoplay enabled and not at first album, go to last song of previous album
+    // If autoplay enabled and not at the first album, go to last song of the previous album
     if (autoplay_enabled && album_list_index > 0) {
         Serial.println("Going to previous album (last song)");
         album_list_index--;
@@ -538,7 +537,7 @@ void play_prev_song() {
             if (!loadAlbumSongs(prevAlbum)) {
                 lcd.display_error("Load failed!");
                 delay(2000);
-                // Fall back to restarting current song
+                // Fall back to restarting the current song
                 elapsed = 0;
                 start_time = millis();
                 const String filePath = current_album->path + "/" + current_song->filename;
