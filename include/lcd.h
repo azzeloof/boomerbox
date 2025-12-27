@@ -9,13 +9,8 @@
 #define CHAR_UP 1
 #define CHAR_DOWN 2
 
-inline byte up_arrow[8] = {
-    0b00100, 0b01110, 0b11111, 0b00100, 0b00100, 0b00100, 0b00000, 0b00000
-  };
-
-inline byte down_arrow[8] = {
-    0b00000, 0b00000, 0b00100, 0b00100, 0b00100, 0b11111, 0b01110, 0b00100
-  };
+extern uint8_t up_arrow[];
+extern uint8_t down_arrow[];
 
 class Lcd {
 public:
@@ -41,7 +36,7 @@ public:
     void clear_buffer();
 
     // Display the "now playing" screen
-    void display_playing(const Song* song, uint32_t elapsed);
+    void display_playing(const Song* song, const Album* album, uint32_t elapsed);
 
     // Display the album selection list
     void display_album_list(const Album* albums, uint16_t albumCount, uint16_t selectedIndex);
@@ -56,7 +51,7 @@ private:
     Adafruit_LiquidCrystal _lcd;
     char _buffer[4][20];
     // Display a progress bar showing elapsed/duration
-    void display_progress(uint32_t elapsed, uint32_t duration, uint8_t line);
+    void display_progress(uint32_t elapsed, uint32_t duration, uint8_t index, uint8_t total, uint8_t line);
 
 
 };

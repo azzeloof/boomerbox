@@ -10,8 +10,8 @@
 // Memory limits
 // Each unloaded album uses ~100 bytes (3 Strings + metadata)
 // With ~150KB available heap, 256 albums = ~25KB, leaving plenty for loaded songs
-constexpr uint16_t MAX_ALBUMS = 256;
-constexpr uint8_t MAX_SONGS_PER_ALBUM = 32;
+constexpr uint16_t MAX_ALBUMS = 512;
+constexpr uint8_t MAX_SONGS_PER_ALBUM = 128;
 constexpr uint8_t MAX_SCAN_DEPTH = 8;
 
 struct Song {
@@ -30,7 +30,7 @@ struct Album {
     Song* songs = nullptr;
     uint8_t song_count = 0;
     uint8_t expected_song_count = 0;
-    bool loaded = false;  // True if songs have been loaded
+    bool loaded = false;
     
     // Free songs array to reclaim memory
     void unload() {
@@ -43,19 +43,19 @@ struct Album {
     }
 };
 
-inline const char* media_extensions[] = {"mp3", "wav", "ogg", "flac"};
-constexpr uint8_t NUM_MEDIA_EXTENSIONS = 4;
+static const char* media_extensions[] = {"mp3", "wav", "ogg"};
+constexpr uint8_t NUM_MEDIA_EXTENSIONS = 3;
 
 // Check if a filename has a supported audio extension
 inline bool isAudioFile(const char* filename) {
-    String name = filename;
-    int lastDot = name.lastIndexOf('.');
+    const String name = filename;
+    const int lastDot = name.lastIndexOf('.');
     if (lastDot < 0) return false;
     String ext = name.substring(lastDot + 1);
     ext.toLowerCase();
-    
-    for (uint8_t i = 0; i < NUM_MEDIA_EXTENSIONS; i++) {
-        if (ext == media_extensions[i]) return true;
+
+    for (auto & media_extension : media_extensions) {
+        if (ext == media_extension) return true;
     }
     return false;
 }

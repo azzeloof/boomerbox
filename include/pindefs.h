@@ -79,5 +79,6 @@
 #define LED_DOWN 1
 
 #define VOL_KNOB 14
+#define AUTOPLAY_SWITCH 13
 
 #endif //BOOMERBOX_PINDEFS_H

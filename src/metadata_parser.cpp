@@ -2,7 +2,7 @@
 
 // Extract filename without path and extension for fallback title
 static String getFilenameWithoutExtension(const char* filepath) {
-    String path = filepath;
+    const String path = filepath;
     int lastSlash = path.lastIndexOf('/');
     int lastDot = path.lastIndexOf('.');
 
@@ -12,30 +12,30 @@ static String getFilenameWithoutExtension(const char* filepath) {
     return path.substring(lastSlash + 1, lastDot);
 }
 
-// Get file extension in lowercase
+// Get file extension (lowercase)
 String getFileExtension(const char* filepath) {
-    String path = filepath;
-    int lastDot = path.lastIndexOf('.');
+    const String path = filepath;
+    const int lastDot = path.lastIndexOf('.');
     if (lastDot < 0) return "";
     String ext = path.substring(lastDot + 1);
     ext.toLowerCase();
     return ext;
 }
 
-// Read a syncsafe integer (used in ID3v2)
-static uint32_t readSyncsafeInt(File &file) {
+// Read a sync safe integer (used in ID3v2)
+static uint32_t readSyncSafeInt(File &file) {
     uint8_t bytes[4];
     file.read(bytes, 4);
-    return ((uint32_t)bytes[0] << 21) | ((uint32_t)bytes[1] << 14) |
-           ((uint32_t)bytes[2] << 7) | bytes[3];
+    return (static_cast<uint32_t>(bytes[0]) << 21) | (static_cast<uint32_t>(bytes[1]) << 14) |
+           (static_cast<uint32_t>(bytes[2]) << 7) | bytes[3];
 }
 
 // Read a big-endian 32-bit integer
 static uint32_t readBigEndian32(File &file) {
     uint8_t bytes[4];
     file.read(bytes, 4);
-    return ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16) |
-           ((uint32_t)bytes[2] << 8) | bytes[3];
+    return (static_cast<uint32_t>(bytes[0]) << 24) | (static_cast<uint32_t>(bytes[1]) << 16) |
+           (static_cast<uint32_t>(bytes[2]) << 8) | bytes[3];
 }
 
 // Read a little-endian 32-bit integer
@@ -49,7 +49,7 @@ static uint32_t readLittleEndian32(File &file) {
 static uint32_t readBigEndian24(File &file) {
     uint8_t bytes[3];
     file.read(bytes, 3);
-    return ((uint32_t)bytes[0] << 16) | ((uint32_t)bytes[1] << 8) | bytes[2];
+    return (static_cast<uint32_t>(bytes[0]) << 16) | (static_cast<uint32_t>(bytes[1]) << 8) | bytes[2];
 }
 
 static void parseTrackNumber(const char* str, uint8_t &trackNumber, uint8_t &totalTracks) {
@@ -61,7 +61,7 @@ static void parseTrackNumber(const char* str, uint8_t &trackNumber, uint8_t &tot
 }
 
 // Maximum iterations for parsing loops to prevent hangs
-static const uint32_t MAX_PARSE_ITERATIONS = 500;
+static constexpr uint32_t MAX_PARSE_ITERATIONS = 500;
 
 bool parseWavMetadata(File &file, SongMetadata &metadata) {
     if (!file) return false;
@@ -105,7 +105,7 @@ bool parseWavMetadata(File &file, SongMetadata &metadata) {
         if (file.read(chunkId, 4) != 4) break;
         if (file.read(&chunkSize, 4) != 4) break;
 
-        uint32_t chunkStart = file.position();
+        const uint32_t chunkStart = file.position();
 
         if (strncmp(chunkId, "fmt ", 4) == 0) {
             // Format chunk - needed for duration calculation
@@ -124,7 +124,7 @@ bool parseWavMetadata(File &file, SongMetadata &metadata) {
             if (file.read(header, 4) != 4) break;
 
             if (strncmp(header, "INFO", 4) == 0) {
-                uint32_t listEnd = chunkStart + chunkSize;
+                const uint32_t listEnd = chunkStart + chunkSize;
                 uint32_t infoIterations = 0;
 
                 while (file.position() < listEnd && infoIterations++ < MAX_PARSE_ITERATIONS) {
@@ -134,7 +134,7 @@ bool parseWavMetadata(File &file, SongMetadata &metadata) {
                     if (file.read(infoId, 4) != 4) break;
                     if (file.read(&infoSize, 4) != 4) break;
 
-                    uint32_t readSize = min(infoSize, (uint32_t)63);
+                    const uint32_t readSize = min(infoSize, static_cast<uint32_t>(63));
                     file.read(buffer, readSize);
                     buffer[readSize] = '\0';
 
@@ -148,19 +148,19 @@ bool parseWavMetadata(File &file, SongMetadata &metadata) {
                         parseTrackNumber(buffer, metadata.trackNumber, metadata.totalTracks);
                     }
 
-                    // Move to next info chunk (account for padding)
+                    // Move to the next info chunk (account for padding)
                     file.seek(file.position() - readSize + ((infoSize + 1) & ~1));
                 }
             }
         }
 
-        // Move to next chunk (chunks are word-aligned)
+        // Move to the next chunk (chunks are word-aligned)
         file.seek(chunkStart + ((chunkSize + 1) & ~1));
     }
 
     // Calculate duration from audio data
     if (sampleRate > 0 && channels > 0 && bitsPerSample > 0) {
-        uint32_t bytesPerSample = (bitsPerSample / 8) * channels;
+        const uint32_t bytesPerSample = (bitsPerSample / 8) * channels;
         metadata.duration = dataSize / (sampleRate * bytesPerSample);
     }
 
@@ -187,19 +187,19 @@ bool parseMp3Metadata(File &file, SongMetadata &metadata) {
 
     char buffer[128];
 
-    // Try to read ID3v2 tag first (at the beginning of file)
+    // Try to read the ID3v2 tag first (at the beginning of the file)
     char header[10];
     if (file.read(header, 10) == 10 && strncmp(header, "ID3", 3) == 0) {
         // ID3v2 tag found
-        uint8_t majorVersion = header[3];
+        const uint8_t majorVersion = header[3];
 
-        // Calculate tag size (syncsafe integer)
-        uint32_t tagSize = ((uint32_t)(header[6] & 0x7F) << 21) |
-                          ((uint32_t)(header[7] & 0x7F) << 14) |
-                          ((uint32_t)(header[8] & 0x7F) << 7) |
+        // Calculate tag size (sync safe integer)
+        const uint32_t tagSize = (static_cast<uint32_t>(header[6] & 0x7F) << 21) |
+                          (static_cast<uint32_t>(header[7] & 0x7F) << 14) |
+                          (static_cast<uint32_t>(header[8] & 0x7F) << 7) |
                           (header[9] & 0x7F);
 
-        uint32_t tagEnd = 10 + tagSize;
+        const uint32_t tagEnd = 10 + tagSize;
 
         // Parse ID3v2 frames
         uint32_t iterations = 0;
@@ -212,8 +212,8 @@ bool parseMp3Metadata(File &file, SongMetadata &metadata) {
 
             uint32_t frameSize;
             if (majorVersion >= 4) {
-                // ID3v2.4 uses syncsafe integers for frame size
-                frameSize = readSyncsafeInt(file);
+                // ID3v2.4 uses sync safe integers for frame size
+                frameSize = readSyncSafeInt(file);
             } else {
                 // ID3v2.3 and earlier use regular integers
                 frameSize = readBigEndian32(file);
@@ -227,7 +227,7 @@ bool parseMp3Metadata(File &file, SongMetadata &metadata) {
                 uint8_t encoding = 0;
                 file.read(&encoding, 1);
 
-                uint32_t textSize = min(frameSize - 1, (uint32_t)126);
+                const uint32_t textSize = min(frameSize - 1, static_cast<uint32_t>(126));
                 file.read(buffer, textSize);
                 buffer[textSize] = '\0';
 
@@ -243,7 +243,7 @@ bool parseMp3Metadata(File &file, SongMetadata &metadata) {
                     parseTrackNumber(buffer, metadata.trackNumber, metadata.totalTracks);
                 }
 
-                // Skip remaining bytes if frame was larger
+                // Skip remaining bytes if the frame was larger
                 if (frameSize > textSize + 1) {
                     file.seek(file.position() + (frameSize - textSize - 1));
                 }
@@ -254,7 +254,7 @@ bool parseMp3Metadata(File &file, SongMetadata &metadata) {
         }
     }
 
-    // If no ID3v2 metadata found, try ID3v1 at the end of file
+    // If no ID3v2 metadata found, try ID3v1 at the end of the file
     if (metadata.title.length() == 0 && metadata.artist.length() == 0) {
         // ID3v1 tag is 128 bytes at the end of the file
         if (file.size() > 128) {
@@ -292,13 +292,13 @@ bool parseMp3Metadata(File &file, SongMetadata &metadata) {
         }
     }
 
-    // Estimate duration by finding first valid MP3 frame
+    // Estimate duration by finding the first valid MP3 frame
     file.seek(0);
 
     // Skip ID3v2 tag if present
     if (file.read(header, 3) == 3 && strncmp(header, "ID3", 3) == 0) {
         file.seek(6);
-        uint32_t tagSize = readSyncsafeInt(file);
+        const uint32_t tagSize = readSyncSafeInt(file);
         file.seek(10 + tagSize);
     } else {
         file.seek(0);
@@ -318,13 +318,13 @@ bool parseMp3Metadata(File &file, SongMetadata &metadata) {
                 file.read(headerBytes, 2);
 
                 // Extract bitrate index
-                uint8_t bitrateIndex = (headerBytes[0] >> 4) & 0x0F;
+                const uint8_t bitrateIndex = (headerBytes[0] >> 4) & 0x0F;
 
                 // Bitrate table for MPEG1 Layer 3
                 static const uint16_t bitrates[] = {0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0};
 
                 if (bitrateIndex > 0 && bitrateIndex < 15) {
-                    uint32_t bitrate = bitrates[bitrateIndex] * 1000;
+                    const uint32_t bitrate = bitrates[bitrateIndex] * 1000;
                     uint32_t audioSize = file.size();
 
                     // Subtract ID3v1 tag size if present
@@ -354,26 +354,39 @@ bool parseMp3Metadata(File &file, SongMetadata &metadata) {
     return true;
 }
 
-// Parse Vorbis comment block (shared between FLAC and OGG)
+// Parse Vorbis comment block (OGG)
 static void parseVorbisComments(File &file, uint32_t blockLength, SongMetadata &metadata) {
+    const uint32_t startPos = file.position();
+    const uint32_t endPos = startPos + blockLength;
+    
     // Read vendor string length
-    uint32_t vendorLength = readLittleEndian32(file);
+    const uint32_t vendorLength = readLittleEndian32(file);
+
+    // Bounds check before seeking
+    if (vendorLength > blockLength || file.position() + vendorLength > endPos) {
+        return;
+    }
 
     // Skip vendor string
     file.seek(file.position() + vendorLength);
 
-    // Read number of comments
+    // Read the number of comments
     uint32_t numComments = readLittleEndian32(file);
 
-    // Limit to reasonable number
+    // Limit to a reasonable number
     if (numComments > MAX_PARSE_ITERATIONS) {
         numComments = MAX_PARSE_ITERATIONS;
     }
 
     char buffer[128];
 
-    for (uint32_t i = 0; i < numComments && file.available(); i++) {
-        uint32_t commentLength = readLittleEndian32(file);
+    for (uint32_t i = 0; i < numComments && file.available() && file.position() < endPos; i++) {
+        const uint32_t commentLength = readLittleEndian32(file);
+
+        // Bounds check
+        if (file.position() + commentLength > endPos) {
+            break;
+        }
 
         if (commentLength > 0 && commentLength < sizeof(buffer) - 1) {
             file.read(buffer, commentLength);
@@ -384,7 +397,7 @@ static void parseVorbisComments(File &file, uint32_t blockLength, SongMetadata &
             if (equals) {
                 *equals = '\0';
                 char* key = buffer;
-                char* value = equals + 1;
+                const char* value = equals + 1;
 
                 // Convert key to uppercase for comparison
                 for (char* p = key; *p; p++) {
@@ -410,85 +423,6 @@ static void parseVorbisComments(File &file, uint32_t blockLength, SongMetadata &
             file.seek(file.position() + commentLength);
         }
     }
-}
-
-bool parseFlacMetadata(File &file, SongMetadata &metadata) {
-    if (!file) return false;
-
-    file.seek(0);
-
-    // Initialize with defaults
-    metadata.title = "";
-    metadata.artist = "";
-    metadata.album = "";
-    metadata.duration = 0;
-    metadata.trackNumber = 0;
-    metadata.totalTracks = 0;
-
-    // Check for "fLaC" magic number
-    char magic[4];
-    if (file.read(magic, 4) != 4 || strncmp(magic, "fLaC", 4) != 0) {
-        return false;
-    }
-
-    uint32_t sampleRate = 0;
-    uint64_t totalSamples = 0;
-
-    // Parse metadata blocks
-    bool lastBlock = false;
-    uint32_t iterations = 0;
-    while (!lastBlock && file.available() && iterations++ < MAX_PARSE_ITERATIONS) {
-        uint8_t blockHeader;
-        file.read(&blockHeader, 1);
-
-        lastBlock = (blockHeader & 0x80) != 0;
-        uint8_t blockType = blockHeader & 0x7F;
-
-        uint32_t blockLength = readBigEndian24(file);
-
-        uint32_t blockStart = file.position();
-
-        if (blockType == 0) {
-            // STREAMINFO block
-            file.seek(blockStart + 10);
-
-            uint8_t srBytes[4];
-            file.read(srBytes, 4);
-
-            // Sample rate is 20 bits starting at bit 0
-            sampleRate = ((uint32_t)srBytes[0] << 12) | ((uint32_t)srBytes[1] << 4) | (srBytes[2] >> 4);
-
-            // Total samples is 36 bits starting at bit 24
-            uint8_t samplesBytes[5];
-            file.seek(blockStart + 13);
-            file.read(samplesBytes, 5);
-
-            totalSamples = ((uint64_t)(samplesBytes[0] & 0x0F) << 32) |
-                          ((uint64_t)samplesBytes[1] << 24) |
-                          ((uint64_t)samplesBytes[2] << 16) |
-                          ((uint64_t)samplesBytes[3] << 8) |
-                          samplesBytes[4];
-
-        } else if (blockType == 4) {
-            // VORBIS_COMMENT block
-            parseVorbisComments(file, blockLength, metadata);
-        }
-
-        // Move to next block
-        file.seek(blockStart + blockLength);
-    }
-
-    // Calculate duration
-    if (sampleRate > 0 && totalSamples > 0) {
-        metadata.duration = totalSamples / sampleRate;
-    }
-
-    // Fall back to filename if no title found
-    if (metadata.title.length() == 0) {
-        metadata.title = getFilenameWithoutExtension(file.name());
-    }
-
-    return true;
 }
 
 bool parseOggMetadata(File &file, SongMetadata &metadata) {
@@ -519,7 +453,7 @@ bool parseOggMetadata(File &file, SongMetadata &metadata) {
     // Parse OGG pages looking for Vorbis headers
     int pageCount = 0;
     while (file.available() && pageCount < 10) {
-        // Read page header
+        // Read the page header
         char pageSync[4];
         if (file.read(pageSync, 4) != 4 || strncmp(pageSync, "OggS", 4) != 0) {
             break;
@@ -552,7 +486,7 @@ bool parseOggMetadata(File &file, SongMetadata &metadata) {
         uint8_t pageSegments;
         file.read(&pageSegments, 1);
 
-        // Read segment table
+        // Read the segment table
         uint32_t pageDataSize = 0;
         for (uint8_t i = 0; i < pageSegments; i++) {
             uint8_t segSize;
@@ -560,7 +494,7 @@ bool parseOggMetadata(File &file, SongMetadata &metadata) {
             pageDataSize += segSize;
         }
 
-        uint32_t pageDataStart = file.position();
+        const uint32_t pageDataStart = file.position();
 
         // Check for Vorbis identification header
         if (pageCount == 0) {
@@ -593,13 +527,13 @@ bool parseOggMetadata(File &file, SongMetadata &metadata) {
             }
         }
 
-        // Move to next page
+        // Move to the next page
         file.seek(pageDataStart + pageDataSize);
         pageCount++;
     }
 
     // To get accurate duration, find the last OGG page
-    // Seek near the end of file and look for last "OggS"
+    // Seek near the end of the file and look for the last "OggS"
     uint32_t searchStart = 0;
     if (file.size() > 65536) {
         searchStart = file.size() - 65536;
@@ -646,14 +580,12 @@ bool parseOggMetadata(File &file, SongMetadata &metadata) {
 bool parseMetadata(File &file, SongMetadata &metadata) {
     if (!file) return false;
 
-    String ext = getFileExtension(file.name());
+    const String ext = getFileExtension(file.name());
 
     if (ext == "wav") {
         return parseWavMetadata(file, metadata);
     } else if (ext == "mp3") {
         return parseMp3Metadata(file, metadata);
-    } else if (ext == "flac") {
-        return parseFlacMetadata(file, metadata);
     } else if (ext == "ogg") {
         return parseOggMetadata(file, metadata);
     }

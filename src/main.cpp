@@ -42,6 +42,7 @@ Adafruit_seesaw ss;
 State player_state = State::IDLE;
 boolean sd_card_present = false;
 ButtonStates button_states = ButtonStates();
+boolean autoplay_enabled = false;
 
 // Album storage - only metadata, songs loaded on demand
 Album albums[MAX_ALBUMS];
@@ -55,6 +56,11 @@ unsigned long start_time = 0;
 double volume = 20.0; // 0 - 100
 uint8_t player_volume = 0; // 255 - 0
 
+constexpr uint8_t N_BUTTONS = 4;
+unsigned long lastButtonPress[N_BUTTONS] = {0, 0, 0, 0};
+constexpr unsigned long DEBOUNCE_DELAY = 500;
+
+
 void poll_inputs() {
     button_states.play = !ss.digitalRead(BTN_PLAY);
     button_states.stop = !ss.digitalRead(BTN_STOP);
@@ -65,6 +71,7 @@ void poll_inputs() {
     ss.digitalWrite(LED_STOP, button_states.stop);
     ss.digitalWrite(LED_UP, button_states.up);
     ss.digitalWrite(LED_DOWN, button_states.down);
+    autoplay_enabled = !digitalRead(AUTOPLAY_SWITCH);
 }
 
 // ============================================================================
@@ -190,7 +197,7 @@ bool loadAlbumSongs(Album* album) {
     // Decide whether to sort based on track numbers
     // Sort if: we have valid track numbers AND at least half the songs have them
 
-    if (bool shouldSort = hasValidTrackNumbers && (tracksWithNumbers >= (songIndex + 1) / 2)) {
+    if (hasValidTrackNumbers && (tracksWithNumbers >= (songIndex + 1) / 2)) {
         // Log any suspicious metadata before sorting
         for (uint8_t i = 0; i < album->song_count; i++) {
             Song& song = album->songs[i];
@@ -295,12 +302,12 @@ bool registerAlbumFromDir(File& dir, const String& path) {
         return false;
     }
 
-    // Parse metadata from first file
+    // Parse metadata from the first file
     SongMetadata metadata;
     const bool hasMetadata = parseMetadata(firstAudio, metadata);
     firstAudio.close();
 
-    // Create album entry
+    // Create an album entry
     Album& album = albums[n_albums];
     album.path = path;
     album.songs = nullptr;
@@ -334,6 +341,9 @@ void scan_dir(File& dir, const String& path, uint8_t depth) {
     if (depth > MAX_SCAN_DEPTH || n_albums >= MAX_ALBUMS) {
         return;
     }
+
+    // Skip if the directory name starts with "TRASH"
+    if (path.startsWith("/TRASH")) return;
 
     bool hasAudioFiles = false;
     bool hasSubdirs = false;
@@ -460,7 +470,7 @@ void play_next_song() {
         start_time = millis();
         if (!musicPlayer.startPlayingFile(filePath.c_str())) { // interrupts wouldn't work. Maybe 2040 problem
             Serial.println("Failed to start playback!");
-            // Try next song
+            // Try the next song
             play_next_song();
             return;
         }
@@ -471,7 +481,12 @@ void play_next_song() {
         // End of album
         Serial.println("End of album");
         current_song = nullptr;
-        player_state = State::IDLE;
+        if (autoplay_enabled && album_list_index < n_albums - 1) {
+            album_list_index++;
+            play_album(&albums[album_list_index]);
+        } else {
+            player_state = State::IDLE;
+        }
     }
 }
 
@@ -479,6 +494,18 @@ void play_prev_song() {
     Serial.println("play_prev_song()");
     if (!current_album || !current_album->loaded) return;
 
+    // If more than 5 seconds into the song, restart it
+    if (elapsed > 5) {
+        Serial.println("Restarting current song");
+        elapsed = 0;
+        start_time = millis();
+        const String filePath = current_album->path + "/" + current_song->filename;
+        musicPlayer.startPlayingFile(filePath.c_str());
+        delay(50);
+        return;
+    }
+
+    // If not at the first song, go to previous song in this album
     if (current_song_index > 0) {
         current_song_index--;
         current_song = &current_album->songs[current_song_index];
@@ -491,10 +518,58 @@ void play_prev_song() {
         if (!musicPlayer.startPlayingFile(filePath.c_str())) {
             Serial.println("Failed to start playback!");
         }
-        
+    
         // Give the player time to start
         delay(50);
+        return;
     }
+
+    // At first song of album
+    // If autoplay enabled and not at first album, go to last song of previous album
+    if (autoplay_enabled && album_list_index > 0) {
+        Serial.println("Going to previous album (last song)");
+        album_list_index--;
+        Album* prevAlbum = &albums[album_list_index];
+
+        // Load the previous album if needed
+        if (!prevAlbum->loaded) {
+            lcd.clear();
+            lcd.display_splash("Loading...", prevAlbum->title);
+            if (!loadAlbumSongs(prevAlbum)) {
+                lcd.display_error("Load failed!");
+                delay(2000);
+                // Fall back to restarting current song
+                elapsed = 0;
+                start_time = millis();
+                const String filePath = current_album->path + "/" + current_song->filename;
+                musicPlayer.startPlayingFile(filePath.c_str());
+                return;
+            }
+        }
+
+        current_album = prevAlbum;
+        current_song_index = current_album->song_count - 1;  // Last song
+        current_song = &current_album->songs[current_song_index];
+        elapsed = 0;
+
+        const String filePath = current_album->path + "/" + current_song->filename;
+        Serial.print("Playing last song of prev album: ");
+        Serial.println(filePath);
+        start_time = millis();
+        if (!musicPlayer.startPlayingFile(filePath.c_str())) {
+            Serial.println("Failed to start playback!");
+        }
+        delay(50);
+        return;
+    }
+
+    // At first song of first album, or autoplay disabled - restart current song
+    Serial.println("At beginning, restarting current song");
+    elapsed = 0;
+    start_time = millis();
+    const String filePath = current_album->path + "/" + current_song->filename;
+    musicPlayer.startPlayingFile(filePath.c_str());
+    delay(50);
 }
 
 void pause() {
@@ -528,13 +603,31 @@ void setup() {
 
     delay(500);
 
+    Serial.println("Initializing Buttons...");
+    if (!ss.begin(SS_I2C_ADDR)) {
+        Serial.println("Failed to initialize Seesaw!");
+        player_state = State::ERROR;
+        return;
+    }
+
+    ss.pinMode(BTN_PLAY, INPUT_PULLUP);
+    ss.pinMode(BTN_STOP, INPUT_PULLUP);
+    ss.pinMode(BTN_UP, INPUT_PULLUP);
+    ss.pinMode(BTN_DOWN, INPUT_PULLUP);
+    ss.pinMode(LED_PLAY, OUTPUT);
+    ss.pinMode(LED_STOP, OUTPUT);
+    ss.pinMode(LED_UP, OUTPUT);
+    ss.pinMode(LED_DOWN, OUTPUT);
+    pinMode(AUTOPLAY_SWITCH, INPUT_PULLUP);
+    Serial.println("Buttons initialized successfully!");
+
     Serial.println("Initializing LCD...");
     if (!lcd.begin()) {
         Serial.println("LCD init failed!");
     }
     lcd.set_backlight(true);
     Serial.println("LCD initialized successfully!");
-    lcd.display_splash("BoomerBox", "Initializing...");
+    lcd.display_splash("Music Box", "Initializing...");
 
     Serial.println("Initializing VS1053...");
     if (!musicPlayer.begin()) {
@@ -554,33 +647,25 @@ void setup() {
         Serial.println("SD card initialized successfully!");
     }
 
-    Serial.println("Initializing Buttons...");
-    if (!ss.begin(SS_I2C_ADDR)) {
-        Serial.println("Failed to initialize Seesaw!");
-        player_state = State::ERROR;
-        return;
-    }
-
-    ss.pinMode(BTN_PLAY, INPUT_PULLUP);
-    ss.pinMode(BTN_STOP, INPUT_PULLUP);
-    ss.pinMode(BTN_UP, INPUT_PULLUP);
-    ss.pinMode(BTN_DOWN, INPUT_PULLUP);
-    ss.pinMode(LED_PLAY, OUTPUT);
-    ss.pinMode(LED_STOP, OUTPUT);
-    ss.pinMode(LED_UP, OUTPUT);
-    ss.pinMode(LED_DOWN, OUTPUT);
-    Serial.println("Buttons initialized successfully!");
-
     if (sd_card_present) {
-        lcd.display_splash("BoomerBox", "Scanning...");
+        lcd.display_splash("Music Box", "Scanning...");
         Serial.println("Scanning for albums...");
         scan_songs();
     }
 
     Serial.println("Ready to play!");
     player_state = State::IDLE;
-    lcd.display_splash("BoomerBox", "Ready!");
+    lcd.display_splash("Music Box", "Ready!");
     delay(1000);
+}
+
+bool buttonReady(uint8_t button) {
+    if (millis() - lastButtonPress[button] > DEBOUNCE_DELAY) {
+        lastButtonPress[button] = millis();
+        return true;
+    } else {
+        return false;
+    }
 }
 
 void loop() {
@@ -596,66 +681,57 @@ void loop() {
             break;
 
         case State::IDLE:
-            if (button_states.up) {
+            if (button_states.up && buttonReady(2)) {
                 if (album_list_index > 0) {
                     album_list_index--;
                 }
-                delay(150);
-            } else if (button_states.down) {
+            } else if (button_states.down && buttonReady(3)) {
                 if (album_list_index < n_albums - 1) {
                     album_list_index++;
                 }
-                delay(150);
-            } else if (button_states.play && n_albums > 0) {
+            } else if (button_states.play && buttonReady(0) && n_albums > 0) {
                 play_album(&albums[album_list_index]);
                 player_state = State::PLAYING;
-                //if (current_song) {
-                //    player_state = State::PLAYING;
-                //}
             }
             lcd.display_album_list(albums, n_albums, album_list_index);
             break;
 
         case State::PLAYING:
-            // Check if song finished - use stopped() for more reliable check
-            // Also add a small debounce to avoid false positives right after starting
+            // Check if the song finished - use stopped() for more reliable check
+            // Also add a small debouncing period to avoid false positives right after starting
             if (musicPlayer.stopped()) {
                 play_next_song();
             }
             elapsed = (millis() - start_time) / 1000.0;
-            if (button_states.stop) {
+            if (button_states.stop && buttonReady(1)) {
                 stop();
                 player_state = State::IDLE;
-            } else if (button_states.play) {
+            } else if (button_states.play && buttonReady(0)) {
                 pause();
                 player_state = State::PAUSED;
-                delay(200);
-            } else if (button_states.up) {
+            } else if (button_states.up && buttonReady(2)) {
                 musicPlayer.stopPlaying();
                 play_prev_song();
-                delay(200);
-            } else if (button_states.down) {
+            } else if (button_states.down && buttonReady(3)) {
                 musicPlayer.stopPlaying();
                 play_next_song();
-                delay(200);
             }
 
             if (current_song) {
-                lcd.display_playing(current_song, elapsed);
+                lcd.display_playing(current_song, current_album, elapsed);
             }
             break;
 
         case State::PAUSED:
-            if (button_states.play) {
+            if (button_states.play && buttonReady(0)) {
                 resume();
                 player_state = State::PLAYING;
-                delay(200);
-            } else if (button_states.stop) {
+            } else if (button_states.stop && buttonReady(1)) {
                 stop();
                 player_state = State::IDLE;
             }
             if (current_song) {
-                lcd.display_playing(current_song, elapsed);
+                lcd.display_playing(current_song, current_album, elapsed);
             }
             break;
 
